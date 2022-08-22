@@ -102,12 +102,23 @@ STATISTIC(NumModifiedBasicBlocks,  "d. Number of modified basic blocks");
 STATISTIC(NumAddedBasicBlocks,  "e. Number of added basic blocks in this module");
 STATISTIC(FinalNumBasicBlocks,  "f. Final number of basic blocks in this module");
 
+// Optional opaque predicate
+enum opType{
+  op1 = 1,   // x * (x + 1) % 2 == 0
+  op2,       // x * x < 0
+  op3,       // (2 * x) % 2 != 0
+  op4,       // x * x - 1 * x + 3 < 0
+  op5        // x * (x + 1) * (x + 2) % 3 == 0
+}ops;
 
 // Options for the pass
 const int defaultObfRate = 30, defaultObfTime = 1;
 
 static cl::opt<int>
 ObfProbRate("bcf_prob", cl::desc("Choose the probability [%] each basic blocks will be obfuscated by the -bcf pass"), cl::value_desc("probability rate"), cl::init(defaultObfRate), cl::Optional);
+
+static cl::opt<int>
+OpType("opaque_predicate_type", cl::desc("Choose which opaque predicate to use(op1 by default)"), cl::value_desc("opaque predicate type"), cl::init(opType::op1), cl::Optional);
 
 static cl::opt<int>
 ObfTimes("bcf_loop", cl::desc("Choose how many time the -bcf pass loop on a function"), cl::value_desc("number of times"), cl::init(defaultObfTime), cl::Optional);
@@ -139,7 +150,7 @@ namespace {
       // If fla annotations
       if(toObfuscate(flag,&F,"bcf")) {
         bogus(F);
-        doF(*F.getParent());
+        doF(*F.getParent(), ops);
         return true;
       }
 
@@ -497,7 +508,7 @@ namespace {
      * More precisely, the condition which predicate is FCMP_TRUE.
      * It also remove all the functions' basic blocks' and instructions' names.
      */
-    bool doF(Module &M){
+    bool doF(Module &M, opType predicate){
       // In this part we extract all always-true predicate and replace them with opaque predicate:
       // For this, we declare two global values: x and y, and replace the FCMP_TRUE predicate with
       // (y < 10 || x * (x + 1) % 2 == 0)
@@ -557,27 +568,52 @@ namespace {
         opX = new LoadInst ((Value *)x, "", (*i));
         opY = new LoadInst ((Value *)y, "", (*i));
 
-        op = BinaryOperator::Create(Instruction::Sub, (Value *)opX,
-            ConstantInt::get(Type::getInt32Ty(M.getContext()), 1,
-              false), "", (*i));
+        /*
+        // x + 1
+        op = BinaryOperator::Create(Instruction::Sub, (Value *)opX, ConstantInt::get(Type::getInt32Ty(M.getContext()), 1, false), "", (*i));
+        // x * [op]
         op1 = BinaryOperator::Create(Instruction::Mul, (Value *)opX, op, "", (*i));
-        op = BinaryOperator::Create(Instruction::URem, op1,
-            ConstantInt::get(Type::getInt32Ty(M.getContext()), 2,
-              false), "", (*i));
-        condition = new ICmpInst((*i), ICmpInst::ICMP_EQ, op,
-            ConstantInt::get(Type::getInt32Ty(M.getContext()), 0,
-              false));
-        condition2 = new ICmpInst((*i), ICmpInst::ICMP_SLT, opY,
-            ConstantInt::get(Type::getInt32Ty(M.getContext()), 10,
-              false));
-        op1 = BinaryOperator::Create(Instruction::Or, (Value *)condition,
-            (Value *)condition2, "", (*i));
-
-        BranchInst::Create(((BranchInst*)*i)->getSuccessor(0),
-            ((BranchInst*)*i)->getSuccessor(1),(Value *) op1,
-            ((BranchInst*)*i)->getParent());
-        DEBUG_WITH_TYPE("gen", errs() << "bcf: Erase branch instruction:"
-            << *((BranchInst*)*i) << "\n");
+        // [op1] % 2
+        op = BinaryOperator::Create(Instruction::URem, op1, ConstantInt::get(Type::getInt32Ty(M.getContext()), 2, false), "", (*i));
+        // [op] == 0
+        condition = new ICmpInst((*i), ICmpInst::ICMP_EQ, op, ConstantInt::get(Type::getInt32Ty(M.getContext()), 0, false));
+        // y < 10
+        condition2 = new ICmpInst((*i), ICmpInst::ICMP_SLT, opY, ConstantInt::get(Type::getInt32Ty(M.getContext()), 10, false));
+        // [condition] || [condition2]
+        op1 = BinaryOperator::Create(Instruction::Or, (Value *)condition, (Value *)condition2, "", (*i));
+        */
+        switch (predicate) {
+        default:
+        case opType::op1:{
+          // x * (x + 1) % 2 == 0
+          op = BinaryOperator::Create(Instruction::Sub, (Value *)opX, ConstantInt::get(Type::getInt32Ty(M.getContext()), 1, false), "", (*i));
+          op1 = BinaryOperator::Create(Instruction::Mul, (Value *)opX, op, "", (*i));
+          op = BinaryOperator::Create(Instruction::URem, op1, ConstantInt::get(Type::getInt32Ty(M.getContext()), 2, false), "", (*i));
+          condition = new ICmpInst((*i), ICmpInst::ICMP_EQ, op, ConstantInt::get(Type::getInt32Ty(M.getContext()), 0, false));
+          break;
+        }
+        case opType::op2:{
+          // x * x < 0
+          op = BinaryOperator::Create(Instruction::Mul, (Value *)opX, (Value *)opX, "", (*i));
+          condition = new ICmpInst((*i), ICmpInst::ICMP_SLT, op, ConstantInt::get(Type::getInt32Ty(M.getContext()), 0, false));
+          break;
+        }
+        case opType::op3:{
+          // (2 * x) % 2 != 0
+          op = BinaryOperator::Create(Instruction::Mul, ConstantInt::get(Type::getInt32Ty(M.getContext()), 2, false), (Value *)opX, "", (*i));
+          op1 = op = BinaryOperator::Create(Instruction::URem, op, ConstantInt::get(Type::getInt32Ty(M.getContext()), 2, false), "", (*i));
+          condition = new ICmpInst((*i), ICmpInst::ICMP_NE, op1, ConstantInt::get(Type::getInt32Ty(M.getContext()), 0, false));
+          break;
+        }
+        case opType::op4:{
+          break;
+        }
+        case opType::op5:{
+          break;
+        }
+        }
+        BranchInst::Create(((BranchInst*)*i)->getSuccessor(0), ((BranchInst*)*i)->getSuccessor(1),(Value *) condition, ((BranchInst*)*i)->getParent());
+        DEBUG_WITH_TYPE("gen", errs() << "bcf: Erase branch instruction:" << *((BranchInst*)*i) << "\n");
         (*i)->eraseFromParent(); // erase the branch
       }
       // Erase all the associated conditions we found

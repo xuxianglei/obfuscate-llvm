@@ -68,9 +68,14 @@ docs/_build
 # VS2017 and VSCode config files.
 .vscode
 .vs
+# IntelliJ Clion config files.
+.idea
 
 #==============================================================================#
 # Files created in tree by the Go bindings.
 #==============================================================================#
 bindings/go/llvm/llvm_config.go
 bindings/go/llvm/workdir
+
+cmake-build-release
+cmake-build-debug
